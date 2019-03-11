@@ -37,9 +37,9 @@ import okhttp3.internal.Util;
  * of calls concurrently.
  */
 public final class Dispatcher {
-  private int maxRequests = 64;
-  private int maxRequestsPerHost = 5;
-  private @Nullable Runnable idleCallback;
+  private int maxRequests = 64; // runningAsyncCalls 队列最大请求数
+  private int maxRequestsPerHost = 5; // 异步请求同一 host 下最大请求数
+  private @Nullable Runnable idleCallback; // idle 回调
 
   /** Executes calls. Created lazily. */
   private @Nullable ExecutorService executorService;
@@ -177,6 +177,9 @@ public final class Dispatcher {
    * them on the executor service. Must not be called with synchronization because executing calls
    * can call into user code.
    *
+   * 将 readyAsyncCalls 中的请求移动到 runningAsyncCalls 中，并通过线程池执行
+   * 不能同步调用，会调用用户代码
+   *
    * @return true if the dispatcher is currently running calls.
    */
   private boolean promoteAndExecute() {
@@ -188,7 +191,9 @@ public final class Dispatcher {
       for (Iterator<AsyncCall> i = readyAsyncCalls.iterator(); i.hasNext(); ) {
         AsyncCall asyncCall = i.next();
 
+        // runningAsyncCalls 队列中最大值不超过 64
         if (runningAsyncCalls.size() >= maxRequests) break; // Max capacity.
+        // 单个 host 下请求不能超过 5 个
         if (asyncCall.callsPerHost().get() >= maxRequestsPerHost) continue; // Host max capacity.
 
         i.remove();
@@ -201,7 +206,7 @@ public final class Dispatcher {
 
     for (int i = 0, size = executableCalls.size(); i < size; i++) {
       AsyncCall asyncCall = executableCalls.get(i);
-      asyncCall.executeOn(executorService());
+      asyncCall.executeOn(executorService()); // 调用线程池执行
     }
 
     return isRunning;
@@ -226,10 +231,12 @@ public final class Dispatcher {
   private <T> void finished(Deque<T> calls, T call) {
     Runnable idleCallback;
     synchronized (this) {
+      // 执行结束后，从相应队列中移除该 call
       if (!calls.remove(call)) throw new AssertionError("Call wasn't in-flight!");
       idleCallback = this.idleCallback;
     }
 
+    // 并将 readyAsyncCalls 队列中的请求按策略移动到 runningAsyncCalls 中
     boolean isRunning = promoteAndExecute();
 
     if (!isRunning && idleCallback != null) {
