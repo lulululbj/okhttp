@@ -80,7 +80,11 @@ final class RealCall implements Call {
     return originalRequest;
   }
 
+  /**
+   * 同步执行
+   */
   @Override public Response execute() throws IOException {
+    // 每个 call 只能执行一次，否则抛出异常
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
@@ -89,7 +93,9 @@ final class RealCall implements Call {
     timeout.enter();
     eventListener.callStart(this);
     try {
+      // 将请求加入 runningSyncCalls 队列，这是一个同步队列
       client.dispatcher().executed(this);
+      // 执行请求，得到响应
       Response result = getResponseWithInterceptorChain();
       if (result == null) throw new IOException("Canceled");
       return result;
@@ -98,6 +104,7 @@ final class RealCall implements Call {
       eventListener.callFailed(this, e);
       throw e;
     } finally {
+      // 将该 Call 从同步队列 runningSyncCalls 中移除
       client.dispatcher().finished(this);
     }
   }
@@ -117,13 +124,18 @@ final class RealCall implements Call {
     retryAndFollowUpInterceptor.setCallStackTrace(callStackTrace);
   }
 
+  /**
+   * 异步执行
+   */
   @Override public void enqueue(Callback responseCallback) {
     synchronized (this) {
+      // 每个 call 只能执行一次，否则抛出异常
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
     }
     captureCallStackTrace();
     eventListener.callStart(this);
+    // 构建一个 AsyncCall，将其加入 readyAsyncCalls 队列，这是一个异步队列
     client.dispatcher().enqueue(new AsyncCall(responseCallback));
   }
 
@@ -207,6 +219,7 @@ final class RealCall implements Call {
       boolean signalledCallback = false;
       timeout.enter();
       try {
+        // 和同步请求一样，最后还是调用 getResponseWithInterceptorChain() 方法执行请求
         Response response = getResponseWithInterceptorChain();
         if (retryAndFollowUpInterceptor.isCanceled()) {
           signalledCallback = true;
@@ -247,20 +260,29 @@ final class RealCall implements Call {
   Response getResponseWithInterceptorChain() throws IOException {
     // Build a full stack of interceptors.
     List<Interceptor> interceptors = new ArrayList<>();
+    // 用户设置的拦截器
     interceptors.addAll(client.interceptors());
+    // 失败重试和重定向拦截器
     interceptors.add(retryAndFollowUpInterceptor);
+    // 1. 将用户构建的请求转换为发送给服务器的网络请求
+    // 2. 将服务器返回的响应转换为对用户友好的响应
     interceptors.add(new BridgeInterceptor(client.cookieJar()));
+    // 缓存拦截器，提供缓存和更新缓存
     interceptors.add(new CacheInterceptor(client.internalCache()));
+    // 连接拦截器，与目标服务器建立连接
     interceptors.add(new ConnectInterceptor(client));
     if (!forWebSocket) {
+      // 用户设置的网络拦截器
       interceptors.addAll(client.networkInterceptors());
     }
+    // 最后一个拦截器，真正与服务器进行通讯
     interceptors.add(new CallServerInterceptor(forWebSocket));
 
     Interceptor.Chain chain = new RealInterceptorChain(interceptors, null, null, null, 0,
         originalRequest, this, eventListener, client.connectTimeoutMillis(),
         client.readTimeoutMillis(), client.writeTimeoutMillis());
 
+    // 通过 RealInterceptorChain 链式调用，得到响应
     return chain.proceed(originalRequest);
   }
 }
