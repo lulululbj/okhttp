@@ -37,8 +37,8 @@ import okhttp3.internal.Util;
  * of calls concurrently.
  */
 public final class Dispatcher {
-  private int maxRequests = 64; // runningAsyncCalls 队列最大请求数
-  private int maxRequestsPerHost = 5; // 同一 host 下最大请求数
+  private int maxRequests = 64; // 最大并发连接数
+  private int maxRequestsPerHost = 5; // 同一 host 下最大并发请求数
   private @Nullable Runnable idleCallback; // idle 回调
 
   /** Executes calls. Created lazily.

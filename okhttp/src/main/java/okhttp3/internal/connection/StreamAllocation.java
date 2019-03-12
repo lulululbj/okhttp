@@ -39,6 +39,11 @@ import static okhttp3.internal.Util.closeQuietly;
 
 /**
  * This class coordinates the relationship between three entities:
+ * 管理这三个实体间的关系：Connections Streams Calls
+ *
+ * Connections： 连接远程服务器的物理 socket
+ * Streams： 建立在 Connections 上的逻辑 Http request/response 对
+ * Calls: Stream 序列。通常将一个 call 的所有 stream 运行在同一个 connection 上
  *
  * <ul>
  *     <li><strong>Connections:</strong> physical socket connections to remote servers. These are

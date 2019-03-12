@@ -126,6 +126,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         releaseConnection = false;
       } catch (RouteException e) {
         // The attempt to connect via a route failed. The request will not have been sent.
+        // 路由连接失败，请求尚未发出
         if (!recover(e.getLastConnectException(), streamAllocation, false, request)) {
           throw e.getFirstConnectException();
         }
@@ -139,6 +140,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         continue;
       } finally {
         // We're throwing an unchecked exception. Release any resources.
+        // 释放资源
         if (releaseConnection) {
           streamAllocation.streamFailed(null);
           streamAllocation.release(true);
@@ -162,6 +164,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         throw e;
       }
 
+      // followUp 为空，释放资源，直接返回 response
       if (followUp == null) {
         streamAllocation.release(true);
         return response;
@@ -169,6 +172,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
 
       closeQuietly(response.body());
 
+      // 重连次数超过最大值 20
       if (++followUpCount > MAX_FOLLOW_UPS) {
         streamAllocation.release(true);
         throw new ProtocolException("Too many follow-up requests: " + followUpCount);
@@ -179,6 +183,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         throw new HttpRetryException("Cannot retry streamed HTTP body", response.code());
       }
 
+      // 一般 followUp 会使用新的 connection
       if (!sameConnection(response, followUp.url())) {
         streamAllocation.release(false);
         streamAllocation = new StreamAllocation(client.connectionPool(),
@@ -220,15 +225,19 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     streamAllocation.streamFailed(e);
 
     // The application layer has forbidden retries.
+    // 应用层禁止失败重连
     if (!client.retryOnConnectionFailure()) return false;
 
     // We can't send the request body again.
+    // 请求已经发出或者请求不可重复
     if (requestSendStarted && requestIsUnrepeatable(e, userRequest)) return false;
 
     // This exception is fatal.
+    // 致命错误
     if (!isRecoverable(e, requestSendStarted)) return false;
 
     // No more routes to attempt.
+    // 无更多 route
     if (!streamAllocation.hasMoreRoutes()) return false;
 
     // For failure recovery, use the same route selector with a new connection.
@@ -242,6 +251,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
 
   private boolean isRecoverable(IOException e, boolean requestSendStarted) {
     // If there was a protocol problem, don't recover.
+    // 协议错误，不可恢复
     if (e instanceof ProtocolException) {
       return false;
     }
@@ -249,6 +259,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     // If there was an interruption don't recover, but if there was a timeout connecting to a route
     // we should try the next route (if there is one).
     if (e instanceof InterruptedIOException) {
+      // socket 连接超时并且请求尚未发出，可恢复
       return e instanceof SocketTimeoutException && !requestSendStarted;
     }
 
@@ -256,12 +267,12 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     // again with a different route.
     if (e instanceof SSLHandshakeException) {
       // If the problem was a CertificateException from the X509TrustManager,
-      // do not retry.
+      // do not retry. https证书错误，不重试
       if (e.getCause() instanceof CertificateException) {
         return false;
       }
     }
-    if (e instanceof SSLPeerUnverifiedException) {
+    if (e instanceof SSLPeerUnverifiedException) { // 证书错误
       // e.g. a certificate pinning error.
       return false;
     }
@@ -283,7 +294,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
 
     final String method = userResponse.request().method();
     switch (responseCode) {
-      case HTTP_PROXY_AUTH:
+      case HTTP_PROXY_AUTH: // 407
         Proxy selectedProxy = route != null
             ? route.proxy()
             : client.proxy();
@@ -292,21 +303,22 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         }
         return client.proxyAuthenticator().authenticate(route, userResponse);
 
-      case HTTP_UNAUTHORIZED:
+      case HTTP_UNAUTHORIZED: // 401
         return client.authenticator().authenticate(route, userResponse);
 
-      case HTTP_PERM_REDIRECT:
-      case HTTP_TEMP_REDIRECT:
+      case HTTP_PERM_REDIRECT: // 308
+      case HTTP_TEMP_REDIRECT: // 307
         // "If the 307 or 308 status code is received in response to a request other than GET
         // or HEAD, the user agent MUST NOT automatically redirect the request"
+        // 对于非 GET 和 HEAD 请求，不进行重定向
         if (!method.equals("GET") && !method.equals("HEAD")) {
           return null;
         }
         // fall-through
-      case HTTP_MULT_CHOICE:
-      case HTTP_MOVED_PERM:
-      case HTTP_MOVED_TEMP:
-      case HTTP_SEE_OTHER:
+      case HTTP_MULT_CHOICE: // 300
+      case HTTP_MOVED_PERM: // 301
+      case HTTP_MOVED_TEMP: // 302
+      case HTTP_SEE_OTHER: // 303
         // Does the client allow redirects?
         if (!client.followRedirects()) return null;
 
@@ -315,9 +327,11 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         HttpUrl url = userResponse.request().url().resolve(location);
 
         // Don't follow redirects to unsupported protocols.
+        // 不支持的协议
         if (url == null) return null;
 
         // If configured, don't follow redirects between SSL and non-SSL.
+        // 不在 http 和 https 之间重定向
         boolean sameScheme = url.scheme().equals(userResponse.request().url().scheme());
         if (!sameScheme && !client.followSslRedirects()) return null;
 
@@ -341,13 +355,14 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         // When redirecting across hosts, drop all authentication headers. This
         // is potentially annoying to the application layer since they have no
         // way to retain them.
+        // 跨 host 重定向，丢弃 Authorization 请求头
         if (!sameConnection(userResponse, url)) {
           requestBuilder.removeHeader("Authorization");
         }
 
         return requestBuilder.url(url).build();
 
-      case HTTP_CLIENT_TIMEOUT:
+      case HTTP_CLIENT_TIMEOUT: // 408
         // 408's are rare in practice, but some servers like HAProxy use this response code. The
         // spec says that we may repeat the request without modifications. Modern browsers also
         // repeat the request (even non-idempotent ones.)
@@ -356,6 +371,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
           return null;
         }
 
+        // StreamedRequestBody
         if (userResponse.request().body() instanceof UnrepeatableRequestBody) {
           return null;
         }
@@ -363,6 +379,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         if (userResponse.priorResponse() != null
             && userResponse.priorResponse().code() == HTTP_CLIENT_TIMEOUT) {
           // We attempted to retry and got another timeout. Give up.
+          // 重试之后仍然是 408
           return null;
         }
 
@@ -372,7 +389,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
 
         return userResponse.request();
 
-      case HTTP_UNAVAILABLE:
+      case HTTP_UNAVAILABLE: // 503
         if (userResponse.priorResponse() != null
             && userResponse.priorResponse().code() == HTTP_UNAVAILABLE) {
           // We attempted to retry and got another timeout. Give up.

@@ -138,17 +138,19 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     List<ConnectionSpec> connectionSpecs = route.address().connectionSpecs();
     ConnectionSpecSelector connectionSpecSelector = new ConnectionSpecSelector(connectionSpecs);
 
-    if (route.address().sslSocketFactory() == null) {
+    if (route.address().sslSocketFactory() == null) { // 非 https 请求
       if (!connectionSpecs.contains(ConnectionSpec.CLEARTEXT)) {
         throw new RouteException(new UnknownServiceException(
             "CLEARTEXT communication not enabled for client"));
       }
       String host = route.address().url().host();
+      // Android P 默认禁止 http 请求
       if (!Platform.get().isCleartextTrafficPermitted(host)) {
         throw new RouteException(new UnknownServiceException(
             "CLEARTEXT communication to " + host + " not permitted by network security policy"));
       }
     } else {
+      // 不使用 https 的 Http2.0 协议
       if (route.address().protocols().contains(Protocol.H2_PRIOR_KNOWLEDGE)) {
         throw new RouteException(new UnknownServiceException(
             "H2_PRIOR_KNOWLEDGE cannot be used with HTTPS"));
